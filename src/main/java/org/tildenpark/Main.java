@@ -11,14 +11,96 @@ enum Side {
     SELL
 }
 
-
 enum MessageType {
     ADD_ORDER_REQUEST,
     CANCEL_ORDER_REQUEST,
     TRADE_EVENT,
     ORDER_FULLY_FILLED,
-    ORDER_PARTIALLY_FILLED
+    ORDER_PARTIALLY_FILLED,
+    MARKET_ORDER_REQUEST,
+    STOP_LOSS_ORDER_REQUEST
 }
+
+class MarketOrderRequest extends Message {
+    private Side side;
+    private int quantity;
+
+    public MarketOrderRequest(Side side, int quantity) {
+        super(MessageType.MARKET_ORDER_REQUEST);
+        this.side = side;
+        this.quantity = quantity;
+    }
+
+    public Side getSide() {
+        return side;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    @Override
+    public String toString() {
+        return "MarketOrderRequest{" +
+                "side=" + side +
+                ", quantity=" + quantity +
+                '}';
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(super.hashCode(), side, quantity);
+    }
+}
+
+class StopLossOrderRequest extends Message {
+    private int orderId;
+    private Side side;
+    private int quantity;
+    private double stopPrice;
+
+    public StopLossOrderRequest(int orderId, Side side, int quantity, double stopPrice) {
+        super(MessageType.STOP_LOSS_ORDER_REQUEST);
+        this.orderId = orderId;
+        this.side = side;
+        this.quantity = quantity;
+        this.stopPrice = stopPrice;
+    }
+
+    public int getOrderId() {
+        return orderId;
+    }
+
+    public Side getSide() {
+        return side;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public double getStopPrice() {
+        return stopPrice;
+    }
+
+    @Override
+    public String toString() {
+        return "StopLossOrderRequest{" +
+                "orderId=" + orderId +
+                ", side=" + side +
+                ", quantity=" + quantity +
+                ", stopPrice=" + stopPrice +
+                '}';
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(super.hashCode(), orderId, side, quantity, stopPrice);
+    }
+}
+
+
+
 
 interface OrderMessage {
     MessageType getMessageType();
@@ -717,18 +799,21 @@ class OrderStringTest {
                 "0,100008,0,3,1050";
 
         return orderString;
+
     }
 
-    /**
-     OrderRequestMessageGenerator. generateMessages(orderString, messageBus);
+    public static List<Message> getExpectedOutput() {
+        List<Message> expectedOutputMessages = new ArrayList<>();
+        expectedOutputMessages.add(new CancelOrder(100004));
+        expectedOutputMessages.add(new TradeEvent(2, 1025.0));
+        expectedOutputMessages.add(new OrderFullyFilled(100005));
+        expectedOutputMessages.add(new OrderFullyFilled(100008));
+        expectedOutputMessages.add(new TradeEvent(1, 1025.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100007, 1, 4));
+        expectedOutputMessages.add(new OrderFullyFilled(100008));
 
-     assertEquals("2,2,1025", messageBus.getOutputMessages().get(0).toString());
-     assertEquals("4,100008,1", messageBus.getOutputMessages().get(1).toString());
-     assertEquals("3,100005", messageBus.getOutputMessages().get(2).toString());
-     assertEquals("2,1,1025", messageBus.getOutputMessages().get(3).toString());
-     assertEquals("3,100008", messageBus.getOutputMessages().get(4).toString());
-     assertEquals("4,100007,4", messageBus.getOutputMessages().get(5).toString());
-     */
+        return expectedOutputMessages;
+    }
 
 }
 
@@ -814,12 +899,41 @@ public class Main {
 
         // Verify the emitted output messages
         List<Message> outputMessages = messageBus.getMessages();
-        verifyOutputMessages(outputMessages);
+        List<Message> expectedOutputMessages = OrderStringTest.getExpectedOutput();
+        verifyOutputMessages(outputMessages, expectedOutputMessages);
+
     }
 
-    private static void verifyOutputMessages(List<Message> outputMessages) {
-        // Implement your verification logic here
-        // Compare the outputMessages list with the expected output messages
-        // Check if the emitted messages are correct based on the input sequence
+    private static void showOutputMessages(List<Message> outputMessages) {
+        for (Message message : outputMessages) {
+            System.out.println(message);
+        }
     }
+    private static void verifyOutputMessages(List<Message> outputMessages, List<Message> expectedOutputMessages) {
+        // Define the expected output messages
+        showOutputMessages(outputMessages);
+
+
+        // Check if the emitted output messages match the expected output messages
+        if (outputMessages.size() != expectedOutputMessages.size()) {
+            System.out.println("Output messages count mismatch!");
+            return;
+        }
+
+        for (int i = 0; i < outputMessages.size(); i++) {
+            Message outputMessage = outputMessages.get(i);
+            Message expectedMessage = expectedOutputMessages.get(i);
+
+            // Compare the output message with the expected message
+            if (!outputMessage.toString().equals(expectedMessage.toString())) {
+                System.out.println("Output message mismatch at index " + i);
+                System.out.println("Expected: " + expectedMessage);
+                System.out.println("Actual: " + outputMessage);
+                return;
+            }
+        }
+
+        System.out.println("Output messages verification passed!");
+    }
+
 }
