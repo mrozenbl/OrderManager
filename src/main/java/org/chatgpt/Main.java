@@ -1,4 +1,5 @@
 package org.chatgpt;
+
 import java.util.*;
 
 enum Side {
@@ -369,7 +370,7 @@ class MatchEngine {
         Order order = orderMap.get(orderId);
 
         if (order != null) {
-            order.setFilled(true); // Mark the order as filled instead of removing it
+            order.setFilled(true);
             orderMap.remove(orderId);
 
             if (order.getSide() == Side.BUY) {
@@ -408,11 +409,11 @@ class MatchEngine {
             }
         }
 
-        if (buyOrder.getQuantity() > 0) {
-            messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), buyOrder.getQuantity(), 0));
-        } else {
+        if (buyOrder.getQuantity() == 0) {
             orderMap.remove(buyOrder.getOrderId());
             messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
+        } else {
+            messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), buyOrder.getQuantity(), 0));
         }
     }
 
@@ -442,15 +443,16 @@ class MatchEngine {
             }
         }
 
-        if (sellOrder.getQuantity() > 0) {
-            messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), sellOrder.getQuantity(), 0));
-        } else {
+        if (sellOrder.getQuantity() == 0) {
             orderMap.remove(sellOrder.getOrderId());
             messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
+        } else {
+            messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), sellOrder.getQuantity(), 0));
         }
     }
 
     private void showOrderBook() {
+        System.out.println("--------------------    --------------------");
         System.out.println("Buy Orders:");
         PriorityQueue<Order> sortedBuyOrders = new PriorityQueue<>(buyOrders);
         while (!sortedBuyOrders.isEmpty()) {
@@ -464,6 +466,8 @@ class MatchEngine {
             Order order = sortedSellOrders.poll();
             System.out.println(order);
         }
+        System.out.println("--------------------    --------------------");
+
     }
 }
 

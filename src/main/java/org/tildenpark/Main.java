@@ -290,12 +290,16 @@ class OrderMessageParser {
 
     public Message parseMessageFromString(String line) {
         String[] parts = line.split(ORDER_SEPARATOR);
-        if (parts.length >= 2) {
+        // show if line is not valid
+        if (parts.length < 2) {
+            System.out.println("ERROR: Invalid input: " + line);
+        } else if (parts.length >= 2) {
             try {
                 int messageType = Integer.parseInt(parts[0]);
                 int orderId = Integer.parseInt(parts[1]);
                 return parseOrderMessage(messageType, orderId, parts);
             } catch (NumberFormatException ignored) {
+                System.out.println(ignored.toString());
             }
         }
         return null;
@@ -549,11 +553,13 @@ class MatchEngine {
     private PriorityQueue<Order> buyOrders;
     private PriorityQueue<Order> sellOrders;
     private MessageBus messageBus;
+    private Map<Integer, Order> orderMap;
 
     public MatchEngine(MessageBus messageBus) {
         this.buyOrders = new PriorityQueue<>(new BuyOrderComparator());
         this.sellOrders = new PriorityQueue<>(new SellOrderComparator());
         this.messageBus = messageBus;
+        this.orderMap = new HashMap<>();
     }
 
     public void process(Message message) {
@@ -573,6 +579,7 @@ class MatchEngine {
     private void processAddOrder(AddOrderRequest request) {
         double price = request.getPrice();
         Order order = new Order(request.getOrderId(), request.getSide(), request.getQuantity(), price);
+        orderMap.put(order.getOrderId(), order);
 
         if (order.getSide() == Side.BUY) {
             buyOrders.add(order);
@@ -585,25 +592,16 @@ class MatchEngine {
 
     private void processCancelOrder(CancelOrderRequest request) {
         int orderId = request.getOrderId();
+        Order order = orderMap.get(orderId);
 
-        Iterator<Order> buyIterator = buyOrders.iterator();
-        while (buyIterator.hasNext()) {
-            Order order = buyIterator.next();
-            if (order.getOrderId() == orderId) {
-                buyIterator.remove();
-                messageBus.publish(new CancelOrder(orderId));
-                return;
+        if (order != null) {
+            orderMap.remove(orderId);
+            if (order.getSide() == Side.BUY) {
+                buyOrders.remove(order);
+            } else {
+                sellOrders.remove(order);
             }
-        }
-
-        Iterator<Order> sellIterator = sellOrders.iterator();
-        while (sellIterator.hasNext()) {
-            Order order = sellIterator.next();
-            if (order.getOrderId() == orderId) {
-                sellIterator.remove();
-                messageBus.publish(new CancelOrder(orderId));
-                return;
-            }
+            messageBus.publish(new CancelOrder(orderId));
         }
     }
 
@@ -639,6 +637,7 @@ class MatchEngine {
 
         for (Order matchedOrder : matchedOrders) {
             sellOrders.remove(matchedOrder);
+            orderMap.remove(matchedOrder.getOrderId());
         }
     }
 
@@ -674,9 +673,9 @@ class MatchEngine {
 
         for (Order matchedOrder : matchedOrders) {
             buyOrders.remove(matchedOrder);
+            orderMap.remove(matchedOrder.getOrderId());
         }
     }
-
 
     private void showOrderBook() {
         List<Order> sortedBuyOrders = new ArrayList<>(buyOrders);
@@ -720,16 +719,16 @@ class OrderStringTest {
         return orderString;
     }
 
-        /**
-         OrderRequestMessageGenerator. generateMessages(orderString, messageBus);
+    /**
+     OrderRequestMessageGenerator. generateMessages(orderString, messageBus);
 
-         assertEquals("2,2,1025", messageBus.getOutputMessages().get(0).toString());
-         assertEquals("4,100008,1", messageBus.getOutputMessages().get(1).toString());
-         assertEquals("3,100005", messageBus.getOutputMessages().get(2).toString());
-         assertEquals("2,1,1025", messageBus.getOutputMessages().get(3).toString());
-         assertEquals("3,100008", messageBus.getOutputMessages().get(4).toString());
-         assertEquals("4,100007,4", messageBus.getOutputMessages().get(5).toString());
-         */
+     assertEquals("2,2,1025", messageBus.getOutputMessages().get(0).toString());
+     assertEquals("4,100008,1", messageBus.getOutputMessages().get(1).toString());
+     assertEquals("3,100005", messageBus.getOutputMessages().get(2).toString());
+     assertEquals("2,1,1025", messageBus.getOutputMessages().get(3).toString());
+     assertEquals("3,100008", messageBus.getOutputMessages().get(4).toString());
+     assertEquals("4,100007,4", messageBus.getOutputMessages().get(5).toString());
+     */
 
 }
 
@@ -738,12 +737,14 @@ class Order {
     private final Side side;
     private int quantity;
     private final double price;
+    private boolean isFilled;
 
     public Order(int orderId, Side side, int quantity, double price) {
         this.orderId = orderId;
         this.side = side;
         this.quantity = quantity;
         this.price = price;
+        this.isFilled = false;
     }
 
     public int getOrderId() {
@@ -766,6 +767,14 @@ class Order {
         return price;
     }
 
+    public boolean isFilled() {
+        return isFilled;
+    }
+
+    public void setFilled(boolean filled) {
+        isFilled = filled;
+    }
+
     @Override
     public String toString() {
         return "Order{" +
@@ -773,12 +782,13 @@ class Order {
                 ", side=" + side +
                 ", quantity=" + quantity +
                 ", price=" + price +
+                ", isFilled=" + isFilled +
                 '}';
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(orderId, side, quantity, price);
+        return Objects.hash(orderId, side, quantity, price, isFilled);
     }
 }
 
