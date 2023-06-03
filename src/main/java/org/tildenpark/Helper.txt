@@ -1,14 +1,14 @@
 class MatchEngine {
-    private Map<Integer, Order> orderMap;
     private PriorityQueue<Order> buyOrders;
     private PriorityQueue<Order> sellOrders;
     private MessageBus messageBus;
+    private Map<Integer, Order> orderMap;
 
     public MatchEngine(MessageBus messageBus) {
-        this.orderMap = new HashMap<>();
         this.buyOrders = new PriorityQueue<>(new BuyOrderComparator());
         this.sellOrders = new PriorityQueue<>(new SellOrderComparator());
         this.messageBus = messageBus;
+        this.orderMap = new HashMap<>();
     }
 
     public void process(Message message) {
@@ -22,7 +22,6 @@ class MatchEngine {
             default:
                 System.out.println("Invalid message type: " + message.getMessageType());
         }
-
         showOrderBook();
     }
 
@@ -45,83 +44,108 @@ class MatchEngine {
         Order order = orderMap.get(orderId);
 
         if (order != null) {
-            order.setFilled(true); // Mark the order as filled instead of removing it
             orderMap.remove(orderId);
-
             if (order.getSide() == Side.BUY) {
                 buyOrders.remove(order);
             } else {
                 sellOrders.remove(order);
             }
-
-            messageBus.publish(new OrderFullyFilled(orderId));
+            messageBus.publish(new CancelOrder(orderId));
         }
     }
 
     private void matchBuyOrder(Order buyOrder) {
+        List<Order> matchedOrders = new ArrayList<>();
+
         while (!sellOrders.isEmpty()) {
             Order sellOrder = sellOrders.peek();
-            if (buyOrder.getPrice() >= sellOrder.getPrice()) {
-                int filledQuantity = Math.min(buyOrder.getQuantity(), sellOrder.getQuantity());
-                buyOrder.setQuantity(buyOrder.getQuantity() - filledQuantity);
-                sellOrder.setQuantity(sellOrder.getQuantity() - filledQuantity);
+            if (sellOrder.getPrice() > buyOrder.getPrice()) {
+                break; // No more matches
+            }
 
-                messageBus.publish(new TradeEvent(filledQuantity, sellOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), filledQuantity, buyOrder.getQuantity()));
-                messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), filledQuantity, sellOrder.getQuantity()));
-
-                if (sellOrder.getQuantity() == 0) {
-                    sellOrders.poll();
-                    orderMap.remove(sellOrder.getOrderId());
-                    messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                }
-
+            if (sellOrder.getQuantity() <= buyOrder.getQuantity()) {
+                sellOrders.poll();
+                int tradeQuantity = sellOrder.getQuantity();
+                messageBus.publish(new TradeEvent(tradeQuantity, sellOrder.getPrice()));
+                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
+                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
+                buyOrder.setQuantity(buyOrder.getQuantity() - tradeQuantity);
                 if (buyOrder.getQuantity() == 0) {
-                    break;
+                    return; // Buy order fully filled
                 }
+                matchedOrders.add(sellOrder);
             } else {
-                break;
+                sellOrder.setQuantity(sellOrder.getQuantity() - buyOrder.getQuantity());
+                messageBus.publish(new TradeEvent(buyOrder.getQuantity(), sellOrder.getPrice()));
+                messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), buyOrder.getQuantity(), sellOrder.getQuantity()));
+                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
+                buyOrder.setQuantity(0);
+                return; // Buy order fully filled
             }
         }
 
-        if (buyOrder.getQuantity() > 0) {
-            messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), buyOrder.getQuantity(), 0));
-        } else {
-            orderMap.remove(buyOrder.getOrderId());
-            messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
+        for (Order matchedOrder : matchedOrders) {
+            sellOrders.remove(matchedOrder);
+            orderMap.remove(matchedOrder.getOrderId());
         }
     }
 
     private void matchSellOrder(Order sellOrder) {
+        List<Order> matchedOrders = new ArrayList<>();
+
         while (!buyOrders.isEmpty()) {
             Order buyOrder = buyOrders.peek();
-            if (sellOrder.getPrice() <= buyOrder.getPrice()) {
-                int filledQuantity = Math.min(sellOrder.getQuantity(), buyOrder.getQuantity());
-                sellOrder.setQuantity(sellOrder.getQuantity() - filledQuantity);
-                buyOrder.setQuantity(buyOrder.getQuantity() - filledQuantity);
+            if (buyOrder.getPrice() < sellOrder.getPrice()) {
+                break; // No more matches
+            }
 
-                messageBus.publish(new TradeEvent(filledQuantity, sellOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), filledQuantity, sellOrder.getQuantity()));
-                messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), filledQuantity, buyOrder.getQuantity()));
-
-                if (buyOrder.getQuantity() == 0) {
-                    buyOrders.poll();
-                    orderMap.remove(buyOrder.getOrderId());
-                    messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                }
-
+            if (buyOrder.getQuantity() <= sellOrder.getQuantity()) {
+                buyOrders.poll();
+                int tradeQuantity = buyOrder.getQuantity();
+                messageBus.publish(new TradeEvent(tradeQuantity, buyOrder.getPrice()));
+                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
+                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
+                sellOrder.setQuantity(sellOrder.getQuantity() - tradeQuantity);
                 if (sellOrder.getQuantity() == 0) {
-                    break;
+                    return; // Sell order fully filled
                 }
+                matchedOrders.add(buyOrder);
             } else {
-                break;
+                buyOrder.setQuantity(buyOrder.getQuantity() - sellOrder.getQuantity());
+                messageBus.publish(new TradeEvent(sellOrder.getQuantity(), buyOrder.getPrice()));
+                messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), sellOrder.getQuantity(), buyOrder.getQuantity()));
+                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
+                sellOrder.setQuantity(0);
+                return; // Sell order fully filled
             }
         }
 
-        if (sellOrder.getQuantity() > 0) {
-            messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), sellOrder.getQuantity(), 0));
-        } else {
-            orderMap.remove(sellOrder.getOrderId());
-            messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
+        for (Order matchedOrder : matchedOrders) {
+            buyOrders.remove(matchedOrder);
+            orderMap.remove(matchedOrder.getOrderId());
         }
     }
+
+    private void showOrderBook() {
+        List<Order> sortedBuyOrders = new ArrayList<>(buyOrders);
+        List<Order> sortedSellOrders = new ArrayList<>(sellOrders);
+
+        Comparator<Order> buyComparator = (Comparator<Order>) buyOrders.comparator();
+        Comparator<Order> sellComparator = (Comparator<Order>) sellOrders.comparator();
+
+        sortedBuyOrders.sort(buyComparator);
+        sortedSellOrders.sort(sellComparator);
+
+        System.out.println("--- BUY ORDERS ---");
+        for (Order order : sortedBuyOrders) {
+            System.out.println(order);
+        }
+
+        System.out.println("--- SELL ORDERS ---");
+        for (Order order : sortedSellOrders) {
+            System.out.println(order);
+        }
+
+        System.out.println("------------------");
+    }
+}

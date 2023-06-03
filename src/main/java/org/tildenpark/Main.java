@@ -21,6 +21,12 @@ enum MessageType {
     STOP_LOSS_ORDER_REQUEST
 }
 
+enum OrderType {
+    LIMIT,
+    MARKET,
+    STOP_LOSS
+}
+
 class MarketOrderRequest extends Message {
     private Side side;
     private int quantity;
@@ -393,13 +399,30 @@ class OrderMessageParser {
                 Side side = Integer.parseInt(parts[2]) == 0 ? Side.BUY : Side.SELL;
                 int quantity = Integer.parseInt(parts[3]);
                 double price = Double.parseDouble(parts[4]);
+
                 return new AddOrderRequest(orderId, side, quantity, price);
             }
         } else if (messageType == 1) {
             return new CancelOrderRequest(orderId);
+        } else if (messageType == 5) {
+            if (parts.length >= 3) {
+                Side side = Integer.parseInt(parts[2]) == 0 ? Side.BUY : Side.SELL;
+                int quantity = Integer.parseInt(parts[3]);
+
+                return new MarketOrderRequest(side, quantity);
+            }
+        } else if (messageType == 6) {
+            if (parts.length >= 5) {
+                Side side = Integer.parseInt(parts[2]) == 0 ? Side.BUY : Side.SELL;
+                int quantity = Integer.parseInt(parts[3]);
+                double stopPrice = Double.parseDouble(parts[4]);
+
+                return new StopLossOrderRequest(orderId, side, quantity, stopPrice);
+            }
         }
         return null;
     }
+
 
     private static class OrderMessageParserHolder {
         private static final OrderMessageParser INSTANCE = new OrderMessageParser();
@@ -630,7 +653,6 @@ class SellOrderComparator implements Comparator<Order> {
     }
 }
 
-
 class MatchEngine {
     private PriorityQueue<Order> buyOrders;
     private PriorityQueue<Order> sellOrders;
@@ -665,10 +687,10 @@ class MatchEngine {
 
         if (order.getSide() == Side.BUY) {
             buyOrders.add(order);
-            matchBuyOrder(order);
+            matchOrder(order, sellOrders, true);
         } else {
             sellOrders.add(order);
-            matchSellOrder(order);
+            matchOrder(order, buyOrders, false);
         }
     }
 
@@ -678,83 +700,46 @@ class MatchEngine {
 
         if (order != null) {
             orderMap.remove(orderId);
-            if (order.getSide() == Side.BUY) {
-                buyOrders.remove(order);
-            } else {
-                sellOrders.remove(order);
-            }
+            boolean isBuyOrder = order.getSide() == Side.BUY;
+            PriorityQueue<Order> orders = isBuyOrder ? buyOrders : sellOrders;
+            orders.remove(order);
             messageBus.publish(new CancelOrder(orderId));
         }
     }
 
-    private void matchBuyOrder(Order buyOrder) {
+    private void matchOrder(Order order, PriorityQueue<Order> oppositeOrders, boolean isBuyOrder) {
         List<Order> matchedOrders = new ArrayList<>();
 
-        while (!sellOrders.isEmpty()) {
-            Order sellOrder = sellOrders.peek();
-            if (sellOrder.getPrice() > buyOrder.getPrice()) {
+        while (!oppositeOrders.isEmpty()) {
+            Order oppositeOrder = oppositeOrders.peek();
+            if ((isBuyOrder && oppositeOrder.getPrice() > order.getPrice()) ||
+                    (!isBuyOrder && oppositeOrder.getPrice() < order.getPrice())) {
                 break; // No more matches
             }
 
-            if (sellOrder.getQuantity() <= buyOrder.getQuantity()) {
-                sellOrders.poll();
-                int tradeQuantity = sellOrder.getQuantity();
-                messageBus.publish(new TradeEvent(tradeQuantity, sellOrder.getPrice()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                buyOrder.setQuantity(buyOrder.getQuantity() - tradeQuantity);
-                if (buyOrder.getQuantity() == 0) {
-                    return; // Buy order fully filled
+            if (oppositeOrder.getQuantity() <= order.getQuantity()) {
+                oppositeOrders.poll();
+                int tradeQuantity = oppositeOrder.getQuantity();
+                messageBus.publish(new TradeEvent(tradeQuantity, oppositeOrder.getPrice()));
+                messageBus.publish(new OrderFullyFilled(oppositeOrder.getOrderId()));
+                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                order.setQuantity(order.getQuantity() - tradeQuantity);
+                if (order.getQuantity() == 0) {
+                    return; // Order fully filled
                 }
-                matchedOrders.add(sellOrder);
+                matchedOrders.add(oppositeOrder);
             } else {
-                sellOrder.setQuantity(sellOrder.getQuantity() - buyOrder.getQuantity());
-                messageBus.publish(new TradeEvent(buyOrder.getQuantity(), sellOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), buyOrder.getQuantity(), sellOrder.getQuantity()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                buyOrder.setQuantity(0);
-                return; // Buy order fully filled
+                oppositeOrder.setQuantity(oppositeOrder.getQuantity() - order.getQuantity());
+                messageBus.publish(new TradeEvent(order.getQuantity(), oppositeOrder.getPrice()));
+                messageBus.publish(new OrderPartiallyFilled(oppositeOrder.getOrderId(), order.getQuantity(), oppositeOrder.getQuantity()));
+                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                order.setQuantity(0);
+                return; // Order fully filled
             }
         }
 
         for (Order matchedOrder : matchedOrders) {
-            sellOrders.remove(matchedOrder);
-            orderMap.remove(matchedOrder.getOrderId());
-        }
-    }
-
-    private void matchSellOrder(Order sellOrder) {
-        List<Order> matchedOrders = new ArrayList<>();
-
-        while (!buyOrders.isEmpty()) {
-            Order buyOrder = buyOrders.peek();
-            if (buyOrder.getPrice() < sellOrder.getPrice()) {
-                break; // No more matches
-            }
-
-            if (buyOrder.getQuantity() <= sellOrder.getQuantity()) {
-                buyOrders.poll();
-                int tradeQuantity = buyOrder.getQuantity();
-                messageBus.publish(new TradeEvent(tradeQuantity, buyOrder.getPrice()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                sellOrder.setQuantity(sellOrder.getQuantity() - tradeQuantity);
-                if (sellOrder.getQuantity() == 0) {
-                    return; // Sell order fully filled
-                }
-                matchedOrders.add(buyOrder);
-            } else {
-                buyOrder.setQuantity(buyOrder.getQuantity() - sellOrder.getQuantity());
-                messageBus.publish(new TradeEvent(sellOrder.getQuantity(), buyOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), sellOrder.getQuantity(), buyOrder.getQuantity()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                sellOrder.setQuantity(0);
-                return; // Sell order fully filled
-            }
-        }
-
-        for (Order matchedOrder : matchedOrders) {
-            buyOrders.remove(matchedOrder);
+            oppositeOrders.remove(matchedOrder);
             orderMap.remove(matchedOrder.getOrderId());
         }
     }
@@ -781,39 +766,10 @@ class MatchEngine {
 
         System.out.println("------------------");
     }
-}
 
 
-class OrderStringTest {
-    public static String  getOrderString() {
-        String orderString = "0,100000,1,1,1075\n" +
-                "0,100001,0,9,1000\n" +
-                "0,100002,0,30,975\n" +
-                "0,100003,1,10,1050\n" +
-                "0,100004,0,10,950\n" +
-                "BADMESSAGE\n" +
-                "0,100005,1,2,1025\n" +
-                "0,100006,0,1,1000\n" +
-                "1,100004\n" +
-                "0,100007,1,5,1025\n" +
-                "0,100008,0,3,1050";
 
-        return orderString;
 
-    }
-
-    public static List<Message> getExpectedOutput() {
-        List<Message> expectedOutputMessages = new ArrayList<>();
-        expectedOutputMessages.add(new CancelOrder(100004));
-        expectedOutputMessages.add(new TradeEvent(2, 1025.0));
-        expectedOutputMessages.add(new OrderFullyFilled(100005));
-        expectedOutputMessages.add(new OrderFullyFilled(100008));
-        expectedOutputMessages.add(new TradeEvent(1, 1025.0));
-        expectedOutputMessages.add(new OrderPartiallyFilled(100007, 1, 4));
-        expectedOutputMessages.add(new OrderFullyFilled(100008));
-
-        return expectedOutputMessages;
-    }
 
 }
 
@@ -822,14 +778,18 @@ class Order {
     private final Side side;
     private int quantity;
     private final double price;
-    private boolean isFilled;
+    private final OrderType orderType;
 
     public Order(int orderId, Side side, int quantity, double price) {
+        this(orderId, side, quantity, price, OrderType.LIMIT);
+    }
+
+    public Order(int orderId, Side side, int quantity, double price, OrderType orderType) {
         this.orderId = orderId;
         this.side = side;
         this.quantity = quantity;
         this.price = price;
-        this.isFilled = false;
+        this.orderType = orderType;
     }
 
     public int getOrderId() {
@@ -852,12 +812,8 @@ class Order {
         return price;
     }
 
-    public boolean isFilled() {
-        return isFilled;
-    }
-
-    public void setFilled(boolean filled) {
-        isFilled = filled;
+    public OrderType getOrderType() {
+        return orderType;
     }
 
     @Override
@@ -867,16 +823,31 @@ class Order {
                 ", side=" + side +
                 ", quantity=" + quantity +
                 ", price=" + price +
-                ", isFilled=" + isFilled +
+                ", orderType=" + orderType +
                 '}';
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(orderId, side, quantity, price, isFilled);
+        return Objects.hash(orderId, side, quantity, price, orderType);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
+        Order other = (Order) obj;
+        return orderId == other.orderId &&
+                side == other.side &&
+                quantity == other.quantity &&
+                Double.compare(price, other.price) == 0 &&
+                orderType == other.orderType;
     }
 }
-
 
 
 public class Main {
@@ -934,6 +905,65 @@ public class Main {
         }
 
         System.out.println("Output messages verification passed!");
+    }
+
+}
+
+class OrderStringTest {
+    public static String getOrderString() {
+        // message type, order id, side, quantity, price
+        //  0 - add (limit) order request
+        //  1 - cancel order request
+        // OUT 2 - trade event
+        // OUT 3 - order fully filled
+        // OUT 4 - order partially filled
+        //  5 - market order
+        //  6 - stop loss order
+
+
+        String orderString = "0,100000,1,1,1075\n" +
+                "0,100001,0,9,1000\n" +
+                "0,100002,0,30,975\n" +
+                "0,100003,1,10,1050\n" +
+                "0,100004,0,10,950\n" +
+                "BADMESSAGE\n" +
+                "0,100005,1,2,1025\n" +
+                "0,100006,0,1,1000\n" +
+                "1,100004\n" +
+                "0,100007,1,5,1025\n" +
+                "0,100008,0,3,1050\n" +
+                "5,100009,1,3";
+
+/*
+        String orderString =
+""""0,100000,1,1,1075
+"0,100001,0,9,1000
+0,100002,0,30,975
+0,100003,1,10,1050
+0,100004,0,10,950
+BADMESSAGE
+0,100005,1,2,1025
+0,100006,0,1,1000
+1,100004
+0,100007,1,5,1025
+0,100008,0,3,1050
+5,100009,1,3"""   ;
+*/
+        return orderString;
+
+    }
+
+    public static List<Message> getExpectedOutput() {
+        List<Message> expectedOutputMessages = new ArrayList<>();
+        expectedOutputMessages.add(new CancelOrder(100004));
+        expectedOutputMessages.add(new TradeEvent(2, 1025.0));
+        expectedOutputMessages.add(new OrderFullyFilled(100005));
+        expectedOutputMessages.add(new OrderFullyFilled(100008));
+        expectedOutputMessages.add(new TradeEvent(1, 1025.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100007, 1, 4));
+        expectedOutputMessages.add(new OrderFullyFilled(100008));
+
+        return expectedOutputMessages;
     }
 
 }
