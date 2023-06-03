@@ -1,0 +1,363 @@
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+interface OrderMessage {
+    MessageType getMessageType();
+}
+
+class Message implements OrderMessage {
+    private MessageType messageType;
+
+    public Message(MessageType messageType) {
+        this.messageType = messageType;
+    }
+
+    public MessageType getMessageType() {
+        return messageType;
+    }
+
+    @Override
+    public String toString() {
+        return "Message{" +
+                "messageType=" + messageType +
+                '}';
+    }
+}
+
+class AddOrderRequest extends Message {
+    private int orderId;
+    private Side side;
+    private int quantity;
+    private double price;
+
+    public AddOrderRequest(int orderId, Side side, int quantity, double price) {
+        super(MessageType.ADD_ORDER_REQUEST);
+        this.orderId = orderId;
+        this.side = side;
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    public int getOrderId() {
+        return orderId;
+    }
+
+    public Side getSide() {
+        return side;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public double getPrice() {
+        return price;
+    }
+
+    @Override
+    public String toString() {
+        return "AddOrderRequest{" +
+                "orderId=" + orderId +
+                ", side=" + side +
+                ", quantity=" + quantity +
+                ", price=" + price +
+                '}';
+    }
+}
+
+class CancelOrderRequest extends Message {
+    private int orderId;
+
+    public CancelOrderRequest(int orderId) {
+        super(MessageType.CANCEL_ORDER_REQUEST);
+        this.orderId = orderId;
+    }
+
+    public int getOrderId() {
+        return orderId;
+    }
+
+    @Override
+    public String toString() {
+        return "CancelOrderRequest{" +
+                "orderId=" + orderId +
+                '}';
+    }
+}
+
+class TradeEvent extends Message {
+    private int quantity;
+    private double price;
+
+    public TradeEvent(int quantity, double price) {
+        super(MessageType.TRADE_EVENT);
+        this.quantity = quantity;
+        this.price = price;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public double getPrice() {
+        return price;
+    }
+
+    @Override
+    public String toString() {
+        return "TradeEvent{" +
+                "quantity=" + quantity +
+                ", price=" + price +
+                '}';
+    }
+}
+
+class OrderFullyFilled extends Message {
+    private int orderId;
+
+    public OrderFullyFilled(int orderId) {
+        super(MessageType.ORDER_FULLY_FILLED);
+        this.orderId = orderId;
+    }
+
+    public int getOrderId() {
+        return orderId;
+    }
+
+    @Override
+    public String toString() {
+        return "OrderFullyFilled{" +
+                "orderId=" + orderId +
+                '}';
+    }
+}
+
+class OrderPartiallyFilled extends Message {
+    private int orderId;
+    private int filledQuantity;
+    private int remainingQuantity;
+
+    public OrderPartiallyFilled(int orderId, int filledQuantity, int remainingQuantity) {
+        super(MessageType.ORDER_PARTIALLY_FILLED);
+        this.orderId = orderId;
+        this.filledQuantity = filledQuantity;
+        this.remainingQuantity = remainingQuantity;
+    }
+
+    public int getOrderId() {
+        return orderId;
+    }
+
+    public int getFilledQuantity() {
+        return filledQuantity;
+    }
+
+    public int getRemainingQuantity() {
+        return remainingQuantity;
+    }
+
+    @Override
+    public String toString() {
+        return "OrderPartiallyFilled{" +
+                "orderId=" + orderId +
+                ", filledQuantity=" + filledQuantity +
+                ", remainingQuantity=" + remainingQuantity +
+                '}';
+    }
+}
+
+class OrderMessageParser {
+    private static final String LINE_SEPARATOR = System.getProperty("line.separator");
+    private static final String ORDER_SEPARATOR = ",";
+
+    private static class OrderMessageParserHolder {
+        private static final OrderMessageParser INSTANCE = new OrderMessageParser();
+    }
+
+    private OrderMessageParser() {
+    }
+
+    public static OrderMessageParser getInstance() {
+        return OrderMessageParserHolder.INSTANCE;
+    }
+
+    public List<Message> parseMessages(String messageString) {
+        List<Message> messages = new ArrayList<>();
+        String[] lines = messageString.trim().split(LINE_SEPARATOR);
+
+        for (String line : lines) {
+            Message message = parseMessageFromString(line);
+            if (message != null) {
+                messages.add(message);
+            }
+        }
+
+        return messages;
+    }
+
+    private Message parseMessageFromString(String line) {
+        String[] parts = line.split(ORDER_SEPARATOR);
+        if (parts.length >= 2) {
+            try {
+                int messageType = Integer.parseInt(parts[0]);
+                int orderId = Integer.parseInt(parts[1]);
+
+                if (messageType == 0) {
+                    if (parts.length >= 5) {
+                        Side side = Integer.parseInt(parts[2]) == 0 ? Side.BUY : Side.SELL;
+                        int quantity = Integer.parseInt(parts[3]);
+                        double price = Double.parseDouble(parts[4]);
+
+                        return createAddOrderRequest(orderId, side, quantity, price);
+                    }
+                } else if (messageType == 1) {
+                    return createCancelOrderRequest(orderId);
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        return null;
+    }
+
+    private AddOrderRequest createAddOrderRequest(int orderId, Side side, int quantity, double price) {
+        return new AddOrderRequest(orderId, side, quantity, price);
+    }
+
+    private CancelOrderRequest createCancelOrderRequest(int orderId) {
+        return new CancelOrderRequest(orderId);
+    }
+}
+
+class RandomMessageGenerator {
+    private static final double PRICE_THRESHOLD = 1e-8;
+
+    private static class RandomMessageGeneratorHolder {
+        private static final RandomMessageGenerator INSTANCE = new RandomMessageGenerator();
+    }
+
+    private RandomMessageGenerator() {
+    }
+
+    public static RandomMessageGenerator getInstance() {
+        return RandomMessageGeneratorHolder.INSTANCE;
+    }
+
+    public List<Message> generateRandomMessages(int count) {
+        List<Message> messages = new ArrayList<>();
+
+        for (int i = 0; i < count; i++) {
+            Message message = generateRandomMessage();
+            messages.add(message);
+        }
+
+        return messages;
+    }
+
+    private Message generateRandomMessage() {
+        double messageType = Math.random() * 2;
+        int orderId = generateUniqueId();
+        Side side = Math.random() < 0.5 ? Side.BUY : Side.SELL;
+        int quantity = (int) (Math.random() * 10) + 1;
+        double price = Math.random() * 1000 + 900;
+
+        if (messageType < 1) {
+            return new AddOrderRequest(orderId, side, quantity, price);
+        } else {
+            if (addedOrders.isEmpty()) {
+                return generateRandomMessage();
+            }
+            int randomIndex = (int) (Math.random() * addedOrders.size());
+            AddOrderRequest addOrderRequest = addedOrders.get(randomIndex);
+            addedOrders.remove(randomIndex);
+            return new CancelOrderRequest(addOrderRequest.getOrderId());
+        }
+    }
+
+    private int currentOrderId = 1;
+    private Set<Integer> usedOrderIds = new HashSet<>();
+    private List<AddOrderRequest> addedOrders = new ArrayList<>();
+
+    private int generateUniqueId() {
+        int orderId = currentOrderId;
+        do {
+            orderId++;
+        } while (usedOrderIds.contains(orderId));
+
+        currentOrderId = orderId + 1;
+        usedOrderIds.add(orderId);
+        return orderId;
+    }
+}
+
+class FileMessageReader {
+    private static class FileMessageReaderHolder {
+        private static final FileMessageReader INSTANCE = new FileMessageReader();
+    }
+
+    private FileMessageReader() {
+    }
+
+    public static FileMessageReader getInstance() {
+        return FileMessageReaderHolder.INSTANCE;
+    }
+
+    public List<Message> readMessagesFromFile(String filePath) throws IOException {
+        List<Message> messages = new ArrayList<>();
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                Message message = OrderMessageParser.getInstance().parseMessageFromString(line);
+                if (message != null) {
+                    messages.add(message);
+                }
+            }
+        }
+
+        return messages;
+    }
+}
+
+enum MessageType {
+    ADD_ORDER_REQUEST,
+    CANCEL_ORDER_REQUEST,
+    TRADE_EVENT,
+    ORDER_FULLY_FILLED,
+    ORDER_PARTIALLY_FILLED
+}
+
+enum Side {
+    BUY,
+    SELL
+}
+
+class OrderRequestMessageGenerator {
+    private OrderRequestMessageGenerator() {
+    }
+
+    private static class OrderRequestMessageGeneratorHolder {
+        private static final OrderRequestMessageGenerator INSTANCE = new OrderRequestMessageGenerator();
+    }
+
+    public static OrderRequestMessageGenerator getInstance() {
+        return OrderRequestMessageGeneratorHolder.INSTANCE;
+    }
+
+    public List<Message> generateMessagesFromString(String messageString) {
+        return OrderMessageParser.getInstance().parseMessages(messageString);
+    }
+
+    public List<Message> generateRandomMessages(int count) {
+        return RandomMessageGenerator.getInstance().generateRandomMessages(count);
+    }
+
+    public List<Message> readMessagesFromFile(String filePath) throws IOException {
+        return FileMessageReader.getInstance().readMessagesFromFile(filePath);
+    }
+}
