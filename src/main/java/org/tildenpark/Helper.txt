@@ -19,10 +19,22 @@ class MatchEngine {
             case CANCEL_ORDER_REQUEST:
                 processCancelOrder((CancelOrderRequest) message);
                 break;
+            case MARKET_ORDER_REQUEST:
+                processMarketOrder((MarketOrderRequest) message);
+                break;
+            case STOP_LOSS_ORDER_REQUEST:
+                processStopLossOrder((StopLossOrderRequest) message);
+                break;
             default:
                 System.out.println("Invalid message type: " + message.getMessageType());
         }
         showOrderBook();
+    }
+
+    private void processStopLossOrder(StopLossOrderRequest message) {
+    }
+
+    private void processMarketOrder(MarketOrderRequest message) {
     }
 
     private void processAddOrder(AddOrderRequest request) {
@@ -32,10 +44,10 @@ class MatchEngine {
 
         if (order.getSide() == Side.BUY) {
             buyOrders.add(order);
-            matchBuyOrder(order);
+            matchOrder(order, sellOrders, true);
         } else {
             sellOrders.add(order);
-            matchSellOrder(order);
+            matchOrder(order, buyOrders, false);
         }
     }
 
@@ -45,83 +57,46 @@ class MatchEngine {
 
         if (order != null) {
             orderMap.remove(orderId);
-            if (order.getSide() == Side.BUY) {
-                buyOrders.remove(order);
-            } else {
-                sellOrders.remove(order);
-            }
+            boolean isBuyOrder = order.getSide() == Side.BUY;
+            PriorityQueue<Order> orders = isBuyOrder ? buyOrders : sellOrders;
+            orders.remove(order);
             messageBus.publish(new CancelOrder(orderId));
         }
     }
 
-    private void matchBuyOrder(Order buyOrder) {
+    private void matchOrder(Order order, PriorityQueue<Order> oppositeOrders, boolean isBuyOrder) {
         List<Order> matchedOrders = new ArrayList<>();
 
-        while (!sellOrders.isEmpty()) {
-            Order sellOrder = sellOrders.peek();
-            if (sellOrder.getPrice() > buyOrder.getPrice()) {
+        while (!oppositeOrders.isEmpty()) {
+            Order oppositeOrder = oppositeOrders.peek();
+            if ((isBuyOrder && oppositeOrder.getPrice() > order.getPrice()) ||
+                    (!isBuyOrder && oppositeOrder.getPrice() < order.getPrice())) {
                 break; // No more matches
             }
 
-            if (sellOrder.getQuantity() <= buyOrder.getQuantity()) {
-                sellOrders.poll();
-                int tradeQuantity = sellOrder.getQuantity();
-                messageBus.publish(new TradeEvent(tradeQuantity, sellOrder.getPrice()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                buyOrder.setQuantity(buyOrder.getQuantity() - tradeQuantity);
-                if (buyOrder.getQuantity() == 0) {
-                    return; // Buy order fully filled
+            if (oppositeOrder.getQuantity() <= order.getQuantity()) {
+                oppositeOrders.poll();
+                int tradeQuantity = oppositeOrder.getQuantity();
+                messageBus.publish(new TradeEvent(tradeQuantity, oppositeOrder.getPrice()));
+                messageBus.publish(new OrderFullyFilled(oppositeOrder.getOrderId()));
+                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                order.setQuantity(order.getQuantity() - tradeQuantity);
+                if (order.getQuantity() == 0) {
+                    return; // Order fully filled
                 }
-                matchedOrders.add(sellOrder);
+                matchedOrders.add(oppositeOrder);
             } else {
-                sellOrder.setQuantity(sellOrder.getQuantity() - buyOrder.getQuantity());
-                messageBus.publish(new TradeEvent(buyOrder.getQuantity(), sellOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(sellOrder.getOrderId(), buyOrder.getQuantity(), sellOrder.getQuantity()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                buyOrder.setQuantity(0);
-                return; // Buy order fully filled
+                oppositeOrder.setQuantity(oppositeOrder.getQuantity() - order.getQuantity());
+                messageBus.publish(new TradeEvent(order.getQuantity(), oppositeOrder.getPrice()));
+                messageBus.publish(new OrderPartiallyFilled(oppositeOrder.getOrderId(), order.getQuantity(), oppositeOrder.getQuantity()));
+                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                order.setQuantity(0);
+                return; // Order fully filled
             }
         }
 
         for (Order matchedOrder : matchedOrders) {
-            sellOrders.remove(matchedOrder);
-            orderMap.remove(matchedOrder.getOrderId());
-        }
-    }
-
-    private void matchSellOrder(Order sellOrder) {
-        List<Order> matchedOrders = new ArrayList<>();
-
-        while (!buyOrders.isEmpty()) {
-            Order buyOrder = buyOrders.peek();
-            if (buyOrder.getPrice() < sellOrder.getPrice()) {
-                break; // No more matches
-            }
-
-            if (buyOrder.getQuantity() <= sellOrder.getQuantity()) {
-                buyOrders.poll();
-                int tradeQuantity = buyOrder.getQuantity();
-                messageBus.publish(new TradeEvent(tradeQuantity, buyOrder.getPrice()));
-                messageBus.publish(new OrderFullyFilled(buyOrder.getOrderId()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                sellOrder.setQuantity(sellOrder.getQuantity() - tradeQuantity);
-                if (sellOrder.getQuantity() == 0) {
-                    return; // Sell order fully filled
-                }
-                matchedOrders.add(buyOrder);
-            } else {
-                buyOrder.setQuantity(buyOrder.getQuantity() - sellOrder.getQuantity());
-                messageBus.publish(new TradeEvent(sellOrder.getQuantity(), buyOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(buyOrder.getOrderId(), sellOrder.getQuantity(), buyOrder.getQuantity()));
-                messageBus.publish(new OrderFullyFilled(sellOrder.getOrderId()));
-                sellOrder.setQuantity(0);
-                return; // Sell order fully filled
-            }
-        }
-
-        for (Order matchedOrder : matchedOrders) {
-            buyOrders.remove(matchedOrder);
+            oppositeOrders.remove(matchedOrder);
             orderMap.remove(matchedOrder.getOrderId());
         }
     }
@@ -148,4 +123,9 @@ class MatchEngine {
 
         System.out.println("------------------");
     }
+
+
+
+
+
 }

@@ -28,13 +28,19 @@ enum OrderType {
 }
 
 class MarketOrderRequest extends Message {
+    private int orderId;
     private Side side;
     private int quantity;
 
-    public MarketOrderRequest(Side side, int quantity) {
+    public MarketOrderRequest(int orderId, Side side, int quantity) {
         super(MessageType.MARKET_ORDER_REQUEST);
+        this.orderId = orderId;
         this.side = side;
         this.quantity = quantity;
+    }
+
+    public int getOrderId() {
+        return orderId;
     }
 
     public Side getSide() {
@@ -48,14 +54,15 @@ class MarketOrderRequest extends Message {
     @Override
     public String toString() {
         return "MarketOrderRequest{" +
-                "side=" + side +
+                "orderId=" + orderId +
+                ", side=" + side +
                 ", quantity=" + quantity +
                 '}';
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), side, quantity);
+        return Objects.hash(super.hashCode(), orderId, side, quantity);
     }
 }
 
@@ -376,7 +383,14 @@ class OrderMessageParser {
         return messages;
     }
 
+    public static String stripComments(String input) {
+        // Remove // comments that follow text
+        String regex = "(?s)(?<=\\S)\\s*//.*?(?=\\R|$)";
+        return input.replaceAll(regex, "");
+    }
+
     public Message parseMessageFromString(String line) {
+        line = stripComments(line);
         String[] parts = line.split(ORDER_SEPARATOR);
         // show if line is not valid
         if (parts.length < 2) {
@@ -385,9 +399,12 @@ class OrderMessageParser {
             try {
                 int messageType = Integer.parseInt(parts[0]);
                 int orderId = Integer.parseInt(parts[1]);
-                return parseOrderMessage(messageType, orderId, parts);
+                Message parsed = parseOrderMessage(messageType, orderId, parts);
+                System.out.println("Parsed:" + parsed);
+                return parsed;
             } catch (NumberFormatException ignored) {
                 System.out.println(ignored.toString());
+                ignored.printStackTrace();
             }
         }
         return null;
@@ -409,7 +426,7 @@ class OrderMessageParser {
                 Side side = Integer.parseInt(parts[2]) == 0 ? Side.BUY : Side.SELL;
                 int quantity = Integer.parseInt(parts[3]);
 
-                return new MarketOrderRequest(side, quantity);
+                return new MarketOrderRequest(orderId, side, quantity);
             }
         } else if (messageType == 6) {
             if (parts.length >= 5) {
@@ -653,6 +670,7 @@ class SellOrderComparator implements Comparator<Order> {
     }
 }
 
+
 class MatchEngine {
     private PriorityQueue<Order> buyOrders;
     private PriorityQueue<Order> sellOrders;
@@ -666,6 +684,13 @@ class MatchEngine {
         this.orderMap = new HashMap<>();
     }
 
+    private void removeZeroQuantityOrder(Order order) {
+        boolean isBuyOrder = order.getSide() == Side.BUY;
+        PriorityQueue<Order> orders = isBuyOrder ? buyOrders : sellOrders;
+        orders.remove(order);
+        orderMap.remove(order.getOrderId());
+    }
+
     public void process(Message message) {
         switch (message.getMessageType()) {
             case ADD_ORDER_REQUEST:
@@ -673,6 +698,12 @@ class MatchEngine {
                 break;
             case CANCEL_ORDER_REQUEST:
                 processCancelOrder((CancelOrderRequest) message);
+                break;
+            case MARKET_ORDER_REQUEST:
+                processMarketOrder((MarketOrderRequest) message);
+                break;
+            case STOP_LOSS_ORDER_REQUEST:
+                processStopLossOrder((StopLossOrderRequest) message);
                 break;
             default:
                 System.out.println("Invalid message type: " + message.getMessageType());
@@ -707,34 +738,86 @@ class MatchEngine {
         }
     }
 
+    private void processMarketOrder(MarketOrderRequest request) {
+        Side side = request.getSide();
+        int quantity = request.getQuantity();
+        double price = (side == Side.BUY) ? getBestAskPrice() : getBestBidPrice();
+        Order order = new Order(request.getOrderId(), side, quantity, price, OrderType.MARKET);
+        orderMap.put(order.getOrderId(), order);
+
+        if (side == Side.BUY) {
+            buyOrders.add(order);
+            matchOrder(order, sellOrders, true);
+        } else {
+            sellOrders.add(order);
+            matchOrder(order, buyOrders, false);
+        }
+    }
+
+    private void processStopLossOrder(StopLossOrderRequest request) {
+        int orderId = request.getOrderId();
+        Side side = request.getSide();
+        int quantity = request.getQuantity();
+        double stopPrice = request.getStopPrice();
+        double currentPrice = (side == Side.BUY) ? getBestAskPrice() : getBestBidPrice();
+
+        if ((side == Side.BUY && stopPrice <= currentPrice) || (side == Side.SELL && stopPrice >= currentPrice)) {
+            // Stop price has been reached, convert to a market order
+            processMarketOrder(new MarketOrderRequest(orderId, side, quantity));
+        } else {
+            Order order = new Order(orderId, side, quantity, stopPrice);
+            orderMap.put(order.getOrderId(), order);
+
+            if (side == Side.BUY) {
+                buyOrders.add(order);
+                matchOrder(order, sellOrders, true);
+            } else {
+                sellOrders.add(order);
+                matchOrder(order, buyOrders, false);
+            }
+        }
+    }
+
     private void matchOrder(Order order, PriorityQueue<Order> oppositeOrders, boolean isBuyOrder) {
         List<Order> matchedOrders = new ArrayList<>();
 
-        while (!oppositeOrders.isEmpty()) {
+        boolean isMarketOrder = (order.getOrderType() == OrderType.MARKET);
+
+        while (!oppositeOrders.isEmpty() && order.getQuantity() > 0) {
             Order oppositeOrder = oppositeOrders.peek();
-            if ((isBuyOrder && oppositeOrder.getPrice() > order.getPrice()) ||
-                    (!isBuyOrder && oppositeOrder.getPrice() < order.getPrice())) {
-                break; // No more matches
+
+            if (!isMarketOrder && ((isBuyOrder && oppositeOrder.getPrice() > order.getPrice()) ||
+                    (!isBuyOrder && oppositeOrder.getPrice() < order.getPrice()))) {
+                break;
             }
 
             if (oppositeOrder.getQuantity() <= order.getQuantity()) {
                 oppositeOrders.poll();
                 int tradeQuantity = oppositeOrder.getQuantity();
-                messageBus.publish(new TradeEvent(tradeQuantity, oppositeOrder.getPrice()));
                 messageBus.publish(new OrderFullyFilled(oppositeOrder.getOrderId()));
-                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                messageBus.publish(new TradeEvent(tradeQuantity, oppositeOrder.getPrice()));
                 order.setQuantity(order.getQuantity() - tradeQuantity);
+
                 if (order.getQuantity() == 0) {
-                    return; // Order fully filled
+                    messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                    messageBus.publish(new TradeEvent(tradeQuantity, order.getPrice()));
+                    removeZeroQuantityOrder(order);
+                    return;
+                } else {
+                    messageBus.publish(new OrderPartiallyFilled(order.getOrderId(), tradeQuantity, order.getQuantity()));
                 }
+
                 matchedOrders.add(oppositeOrder);
             } else {
-                oppositeOrder.setQuantity(oppositeOrder.getQuantity() - order.getQuantity());
-                messageBus.publish(new TradeEvent(order.getQuantity(), oppositeOrder.getPrice()));
-                messageBus.publish(new OrderPartiallyFilled(oppositeOrder.getOrderId(), order.getQuantity(), oppositeOrder.getQuantity()));
-                messageBus.publish(new OrderFullyFilled(order.getOrderId()));
+                int tradeQuantity = order.getQuantity();
+                oppositeOrder.setQuantity(oppositeOrder.getQuantity() - tradeQuantity);
+                messageBus.publish(new OrderPartiallyFilled(oppositeOrder.getOrderId(), tradeQuantity, oppositeOrder.getQuantity()));
+                messageBus.publish(new TradeEvent(tradeQuantity, order.getPrice()));
                 order.setQuantity(0);
-                return; // Order fully filled
+                removeZeroQuantityOrder(order);
+
+                if (order.getOrderType() != OrderType.MARKET)
+                    return;
             }
         }
 
@@ -742,6 +825,20 @@ class MatchEngine {
             oppositeOrders.remove(matchedOrder);
             orderMap.remove(matchedOrder.getOrderId());
         }
+    }
+
+    private double getBestAskPrice() {
+        if (!sellOrders.isEmpty()) {
+            return sellOrders.peek().getPrice();
+        }
+        return 0.0;
+    }
+
+    private double getBestBidPrice() {
+        if (!buyOrders.isEmpty()) {
+            return buyOrders.peek().getPrice();
+        }
+        return 0.0;
     }
 
     private void showOrderBook() {
@@ -767,10 +864,10 @@ class MatchEngine {
         System.out.println("------------------");
     }
 
-
-
-
-
+    private int generateOrderId() {
+        // Generate a unique order ID
+        return orderMap.size() + 1;
+    }
 }
 
 class Order {
@@ -864,7 +961,7 @@ public class Main {
 
         // Process the order input messages
         for (Message message : messages) {
-            System.out.println(message);
+            System.out.println(" ==> " + message);
             matchEngine.process(message);
         }
 
@@ -882,6 +979,7 @@ public class Main {
     }
     private static void verifyOutputMessages(List<Message> outputMessages, List<Message> expectedOutputMessages) {
         // Define the expected output messages
+        System.out.println("==> Verifying Output messages");
         showOutputMessages(outputMessages);
 
 
@@ -921,23 +1019,9 @@ class OrderStringTest {
         //  6 - stop loss order
 
 
-        String orderString = "0,100000,1,1,1075\n" +
-                "0,100001,0,9,1000\n" +
-                "0,100002,0,30,975\n" +
-                "0,100003,1,10,1050\n" +
-                "0,100004,0,10,950\n" +
-                "BADMESSAGE\n" +
-                "0,100005,1,2,1025\n" +
-                "0,100006,0,1,1000\n" +
-                "1,100004\n" +
-                "0,100007,1,5,1025\n" +
-                "0,100008,0,3,1050\n" +
-                "5,100009,1,3";
-
-/*
-        String orderString =
-""""0,100000,1,1,1075
-"0,100001,0,9,1000
+        String orderString ="""
+0,100000,1,1,1075
+0,100001,0,9,1000
 0,100002,0,30,975
 0,100003,1,10,1050
 0,100004,0,10,950
@@ -946,9 +1030,12 @@ BADMESSAGE
 0,100006,0,1,1000
 1,100004
 0,100007,1,5,1025
-0,100008,0,3,1050
-5,100009,1,3"""   ;
-*/
+0,100008,0,3,1050    /// buy 3 @ 1050
+5,100009,1,3        /// sell 3 market order
+5,100010,0,10       /// buy 10 market order
+6,100011,1,3,1000   /// stop loss order
+""" ;
+
         return orderString;
 
     }
