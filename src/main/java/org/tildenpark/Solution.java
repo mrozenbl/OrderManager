@@ -892,7 +892,6 @@ class MatchEngine {
                 oppositeOrder.setQuantity(oppositeOrder.getQuantity() - tradeQuantity);
                 messageBus.publish(new OrderPartiallyFilled(oppositeOrder.getOrderId(), tradeQuantity, oppositeOrder.getQuantity()));
                 messageBus.publish(new TradeEvent(tradeQuantity, order.getPrice()));
-                order.setQuantity(0);
                 removeZeroQuantityOrder(order);
 
                 if (order.getOrderType() != OrderType.MARKET)
