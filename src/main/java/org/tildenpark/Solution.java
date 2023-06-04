@@ -1,6 +1,27 @@
 package org.tildenpark;
+/**
+ * This collection of classes represents am implementation match engine that handles
+ * buy and sell orders for a single stock. The match engine is responsible for
+ * maintaining the order book, matching orders, and publishing trade events.
+ * <p>
+ * The match engine is a single threaded application. It receives messages
+ * from a single input source. The input source can be a file or generated input.
+ * <p>
+ * The match engine is responsible for maintaining the order book and
+ * publishing trade events. The match engine is also responsible for
+ * handling the following order types:
+ *      <ul>
+ *         <li>Limit Order</li>
+ *         <li>Market Order</li>
+ *         <li>Stop Loss Order</li>
+ *         <li>Cancel Order</li>
+ *      </ul>
+ *
+ * @author Michael Rozenblit
+ * @version 1.0
+ * @since 2023-06-04
+ */
 
-import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
@@ -18,7 +39,8 @@ enum MessageType {
     ORDER_FULLY_FILLED,
     ORDER_PARTIALLY_FILLED,
     MARKET_ORDER_REQUEST,
-    STOP_LOSS_ORDER_REQUEST
+    STOP_LOSS_ORDER_REQUEST,
+    INVALID_ORDER
 }
 
 enum OrderType {
@@ -29,7 +51,7 @@ enum OrderType {
 
 class MarketOrderRequest extends Message {
     private int orderId;
-    private Side side;
+    private final Side side;
     private int quantity;
 
     public MarketOrderRequest(int orderId, Side side, int quantity) {
@@ -68,9 +90,11 @@ class MarketOrderRequest extends Message {
 
 class StopLossOrderRequest extends Message {
     private int orderId;
-    private Side side;
+    private final Side side;
     private int quantity;
     private double stopPrice;
+
+    OrderType orderType = OrderType.STOP_LOSS;
 
     public StopLossOrderRequest(int orderId, Side side, int quantity, double stopPrice) {
         super(MessageType.STOP_LOSS_ORDER_REQUEST);
@@ -86,6 +110,10 @@ class StopLossOrderRequest extends Message {
 
     public Side getSide() {
         return side;
+    }
+
+    public OrderType getOrderType() {
+        return orderType;
     }
 
     public int getQuantity() {
@@ -120,7 +148,7 @@ interface OrderMessage {
 }
 
 class Message implements OrderMessage {
-    private MessageType messageType;
+    private final MessageType messageType;
 
     public Message(MessageType messageType) {
         this.messageType = messageType;
@@ -144,10 +172,10 @@ class Message implements OrderMessage {
 }
 
 class AddOrderRequest extends Message {
-    private int orderId;
-    private Side side;
+    private final int orderId;
+    private final Side side;
     private int quantity;
-    private double price;
+    private final double price;
 
     public AddOrderRequest(int orderId, Side side, int quantity, double price) {
         super(MessageType.ADD_ORDER_REQUEST);
@@ -190,7 +218,7 @@ class AddOrderRequest extends Message {
 }
 
 class CancelOrderRequest extends Message {
-    private int orderId;
+    private final int orderId;
 
     public CancelOrderRequest(int orderId) {
         super(MessageType.CANCEL_ORDER_REQUEST);
@@ -216,7 +244,7 @@ class CancelOrderRequest extends Message {
 
 class TradeEvent extends Message {
     private int quantity;
-    private double price;
+    private final double price;
 
     public TradeEvent(int quantity, double price) {
         super(MessageType.TRADE_EVENT);
@@ -245,6 +273,46 @@ class TradeEvent extends Message {
         return Objects.hash(super.hashCode(), quantity, price);
     }
 }
+
+class InvalidMessage extends Message {
+    private int orderId;
+    private Side side;
+    private int quantity;
+    private double price;
+
+    public InvalidMessage() {
+        super(MessageType.INVALID_ORDER);
+        this.orderId = generateInvalidOrderId();
+        this.side = generateInvalidSide();
+        this.quantity = generateInvalidQuantity();
+        this.price = generateInvalidPrice();
+    }
+
+    // Implement getters and setters for the fields
+
+    private int generateInvalidOrderId() {
+        // Generate a negative or zero orderId
+        return -(int) (Math.random() * 100) - 1;
+    }
+
+    private Side generateInvalidSide() {
+        // Randomly select a side that is not BUY or SELL
+        Side[] sides = Side.values();
+        int randomIndex = (int) (Math.random() * sides.length);
+        return sides[randomIndex];
+    }
+
+    private int generateInvalidQuantity() {
+        // Generate a negative or zero quantity
+        return -(int) (Math.random() * 10) - 1;
+    }
+
+    private double generateInvalidPrice() {
+        // Generate a negative or zero price
+        return -(Math.random() * 100) - 1;
+    }
+}
+
 
 class OrderFullyFilled extends Message {
     private int orderId;
@@ -338,6 +406,7 @@ class CancelOrder extends Message {
 
 
 
+
 class MessageBus {
     private List<Message> messages;
 
@@ -402,9 +471,9 @@ class OrderMessageParser {
                 Message parsed = parseOrderMessage(messageType, orderId, parts);
                 System.out.println("Parsed:" + parsed);
                 return parsed;
-            } catch (NumberFormatException ignored) {
-                System.out.println(ignored.toString());
-                ignored.printStackTrace();
+            } catch (NumberFormatException exception) {
+                System.err.println(exception.toString());
+                exception.printStackTrace();
             }
         }
         return null;
@@ -508,11 +577,14 @@ class RandomMessageGenerator {
             messages.add(message);
         }
 
+
         return messages;
     }
 
+
+
     private Message generateRandomMessage() {
-        double messageType = Math.random() * 2;
+        double messageType = Math.random() * 5;
         int orderId;
         Side side;
         int quantity;
@@ -528,7 +600,7 @@ class RandomMessageGenerator {
             addedOrders.add(addOrderRequest);
 
             return addOrderRequest;
-        } else {
+        } else if (messageType < 2) {
             if (addedOrders.isEmpty()) {
                 return generateRandomMessage();
             }
@@ -539,8 +611,24 @@ class RandomMessageGenerator {
 
             orderId = addOrderRequest.getOrderId();
             return new CancelOrderRequest(orderId);
+        } else if (messageType < 3) {
+            orderId = generateUniqueId();
+            side = Math.random() < 0.5 ? Side.BUY : Side.SELL;
+            quantity = (int) (Math.random() * 10) + 1;
+
+            return new MarketOrderRequest(orderId, side, quantity);
+        } else if (messageType < 4) {
+            orderId = generateUniqueId();
+            side = Math.random() < 0.5 ? Side.BUY : Side.SELL;
+            quantity = (int) (Math.random() * 10) + 1;
+            price = generateRandomPrice();
+
+            return new StopLossOrderRequest(orderId, side, quantity, price);
+        } else {
+            return new InvalidMessage();
         }
     }
+
 
     private int generateUniqueId() {
         int orderId = currentOrderId;
@@ -672,9 +760,9 @@ class SellOrderComparator implements Comparator<Order> {
 
 
 class MatchEngine {
-    private PriorityQueue<Order> buyOrders;
-    private PriorityQueue<Order> sellOrders;
-    private MessageBus messageBus;
+    private final PriorityQueue<Order> buyOrders;
+    private final PriorityQueue<Order> sellOrders;
+    private final MessageBus messageBus;
     private Map<Integer, Order> orderMap;
 
     public MatchEngine(MessageBus messageBus) {
@@ -693,20 +781,11 @@ class MatchEngine {
 
     public void process(Message message) {
         switch (message.getMessageType()) {
-            case ADD_ORDER_REQUEST:
-                processAddOrder((AddOrderRequest) message);
-                break;
-            case CANCEL_ORDER_REQUEST:
-                processCancelOrder((CancelOrderRequest) message);
-                break;
-            case MARKET_ORDER_REQUEST:
-                processMarketOrder((MarketOrderRequest) message);
-                break;
-            case STOP_LOSS_ORDER_REQUEST:
-                processStopLossOrder((StopLossOrderRequest) message);
-                break;
-            default:
-                System.out.println("Invalid message type: " + message.getMessageType());
+            case ADD_ORDER_REQUEST -> processAddOrder((AddOrderRequest) message);
+            case CANCEL_ORDER_REQUEST -> processCancelOrder((CancelOrderRequest) message);
+            case MARKET_ORDER_REQUEST -> processMarketOrder((MarketOrderRequest) message);
+            case STOP_LOSS_ORDER_REQUEST -> processStopLossOrder((StopLossOrderRequest) message);
+            default -> System.out.println("Invalid message type: " + message.getMessageType());
         }
         showOrderBook();
     }
@@ -944,43 +1023,85 @@ class Order {
                 Double.compare(price, other.price) == 0 &&
                 orderType == other.orderType;
     }
+
+
+
 }
 
+public class Solution {
 
-public class Main {
     public static void main(String[] args) {
-        // Create a MessageBus
-        MessageBus messageBus = new MessageBus();
+        try {
+            // Create a MessageBus
+            MessageBus messageBus = new MessageBus();
 
-        // Create a MatchEngine
-        MatchEngine matchEngine = new MatchEngine(messageBus);
+            // Create a MatchEngine
+            MatchEngine matchEngine = new MatchEngine(messageBus);
 
-        // Generate a sequence of order input messages
-        //List<Message> messages =  RandomMessageGenerator.getInstance().generateRandomMessages(10);
-        List<Message> messages = OrderRequestMessageGenerator.getInstance().generateMessagesFromString(OrderStringTest.getOrderString());
+            // Generate a sequence of order input messages
+            List<Message> messages = null;
+            try {
+                messages = OrderRequestMessageGenerator.getInstance().generateMessagesFromString(OrderStringTest.getOrderString());
+                //messages = RandomMessageGenerator.getInstance().generateRandomMessages(100);
+                //messages = FileMessageGenerator.getInstance().generateMessagesFromFile("input.txt");
+            } catch (Exception e) {
+                System.err.println("Error generating messages: " + e.getMessage());
+                e.printStackTrace();
+                return;
+            }
 
-        // Process the order input messages
-        for (Message message : messages) {
-            System.out.println(" ==> " + message);
-            matchEngine.process(message);
+            System.out.println("***** Input Messages: *****");
+            showMessages(messages);
+            System.out.println("***************************");
+
+            // Process the order input messages
+            for (Message message : messages) {
+                System.out.println(" ==> " + message);
+                try {
+                    matchEngine.process(message);
+                } catch (Exception e) {
+                    System.err.println("Error processing message: " + message + ", Error: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+
+            // Verify the emitted output messages
+            List<Message> outputMessages = messageBus.getMessages();
+            List<Message> expectedOutputMessages = null;
+            try {
+                expectedOutputMessages = OrderStringTest.getExpectedOutput();
+            } catch (Exception e) {
+                System.err.println("Error generating expected output messages: " + e.getMessage());
+                e.printStackTrace();
+                return;
+            }
+
+            try {
+                verifyOutputMessages(outputMessages, expectedOutputMessages);
+            } catch (Exception e) {
+                System.err.println("Error verifying output messages: " + e.getMessage());
+                e.printStackTrace();
+            }
+
+        } catch (Exception e) {
+            System.err.println("Unexpected error: " + e.getMessage());
+            e.printStackTrace();
         }
-
-        // Verify the emitted output messages
-        List<Message> outputMessages = messageBus.getMessages();
-        List<Message> expectedOutputMessages = OrderStringTest.getExpectedOutput();
-        verifyOutputMessages(outputMessages, expectedOutputMessages);
-
     }
 
-    private static void showOutputMessages(List<Message> outputMessages) {
-        for (Message message : outputMessages) {
-            System.out.println(message);
+
+
+    private static void showMessages(List<Message> messageList) {
+        int i = 0;
+        for (Message message : messageList) {
+            i++;
+            System.out.println(i + " : " + message);
         }
     }
     private static void verifyOutputMessages(List<Message> outputMessages, List<Message> expectedOutputMessages) {
         // Define the expected output messages
         System.out.println("==> Verifying Output messages");
-        showOutputMessages(outputMessages);
+        showMessages(outputMessages);
 
 
         // Check if the emitted output messages match the expected output messages
@@ -1004,6 +1125,7 @@ public class Main {
 
         System.out.println("Output messages verification passed!");
     }
+
 
 }
 
@@ -1033,7 +1155,7 @@ BADMESSAGE
 0,100008,0,3,1050    /// buy 3 @ 1050
 5,100009,1,3        /// sell 3 market order
 5,100010,0,10       /// buy 10 market order
-6,100011,1,3,1000   /// stop loss order
+6,100011,1,30,1000   /// stop loss order @ 1000
 """ ;
 
         return orderString;
@@ -1043,12 +1165,23 @@ BADMESSAGE
     public static List<Message> getExpectedOutput() {
         List<Message> expectedOutputMessages = new ArrayList<>();
         expectedOutputMessages.add(new CancelOrder(100004));
-        expectedOutputMessages.add(new TradeEvent(2, 1025.0));
         expectedOutputMessages.add(new OrderFullyFilled(100005));
-        expectedOutputMessages.add(new OrderFullyFilled(100008));
-        expectedOutputMessages.add(new TradeEvent(1, 1025.0));
+        expectedOutputMessages.add(new TradeEvent(2, 1025.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100008, 2, 1));
         expectedOutputMessages.add(new OrderPartiallyFilled(100007, 1, 4));
-        expectedOutputMessages.add(new OrderFullyFilled(100008));
+        expectedOutputMessages.add(new TradeEvent(1, 1050.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100002, 3, 27));
+        expectedOutputMessages.add(new TradeEvent(3, 975.0));
+        expectedOutputMessages.add(new OrderFullyFilled(100007));
+        expectedOutputMessages.add(new TradeEvent(4, 1025.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100010, 4, 6));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100003, 6, 4));
+        expectedOutputMessages.add(new TradeEvent(6, 1025.0));
+        expectedOutputMessages.add(new OrderFullyFilled(100002));
+        expectedOutputMessages.add(new TradeEvent(27, 975.0));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100011, 27, 3));
+        expectedOutputMessages.add(new OrderPartiallyFilled(100001, 3, 6));
+        expectedOutputMessages.add(new TradeEvent(3, 975.0));
 
         return expectedOutputMessages;
     }
