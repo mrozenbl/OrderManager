@@ -924,11 +924,8 @@ class MatchEngine {
         List<Order> sortedBuyOrders = new ArrayList<>(buyOrders);
         List<Order> sortedSellOrders = new ArrayList<>(sellOrders);
 
-        Comparator<Order> buyComparator = (Comparator<Order>) buyOrders.comparator();
-        Comparator<Order> sellComparator = (Comparator<Order>) sellOrders.comparator();
-
-        sortedBuyOrders.sort(buyComparator);
-        sortedSellOrders.sort(sellComparator);
+        sortedBuyOrders.sort(buyOrders.comparator());
+        sortedSellOrders.sort(sellOrders.comparator());
 
         System.out.println("--- BUY ORDERS ---");
         for (Order order : sortedBuyOrders) {
